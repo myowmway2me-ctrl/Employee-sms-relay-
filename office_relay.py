@@ -4,8 +4,9 @@
 #             Dynamic Schema · Pagination · Health
 # ╚══════════════════════════════════════════════════╝
 
-BOT_TOKEN        = "6379711237:AAEQamc5bWsR-wbF_2s6CdpL6ZKpMIUjG5k"
-ADMIN_IDS        = [6013007573]
+import os
+BOT_TOKEN        = os.environ.get("TG_BOT_TOKEN", "6379711237:AAEQamc5bWsR-wbF_2s6CdpL6ZKpMIUjG5k")
+ADMIN_IDS        = [int(x) for x in os.environ.get("TG_ADMIN_IDS", "6013007573").split(",") if x.strip().isdigit()]
 KEY_PREFIX       = "RELAY-"
 KEY_LENGTH       = 30
 RESYNC_INTERVAL  = 600   # seconds

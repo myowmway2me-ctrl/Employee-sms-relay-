@@ -1,15 +1,13 @@
 """
-admin_web.py — SMS Relay Admin Dashboard  v3
+admin_web.py — SMS Relay Admin Dashboard  v4
 =============================================
 Run: python3 admin_web.py
 
-AI Providers (via api.g0i.ai):
-  - qwen3-coder-80b  →  Firebase structure analysis
-  - claude-sonnet-4.6  →  Admin chat
+AI Provider (via Groq):
+  - llama-3.3-70b-versatile  →  Firebase structure analysis & admin chat
 
 Env vars:
-  OPENAI_API_KEY   — api.g0i.ai key (OpenAI-compatible)
-  ANT_API_KEY      — api.g0i.ai key (Anthropic-compatible)
+  GROQ_API_KEY     — Groq API key
   TG_BOT_TOKEN     — Telegram bot token for alerts
   TG_ADMIN_IDS     — comma-separated admin Telegram IDs
   RELAY_DB_PATH    — path to office_relay.db  (default: ./office_relay.db)
@@ -40,11 +38,6 @@ try:
 except ImportError:
     _install("openai"); from openai import OpenAI
 
-try:
-    import anthropic
-except ImportError:
-    _install("anthropic"); import anthropic
-
 from fb_parser import (
     parse_db_full, fetch_sms_history, fetch_latest_sms,
     ai_learn_structure, load_learned_pattern, list_learned_patterns,
@@ -55,24 +48,18 @@ from fb_parser import (
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
 
-OPENAI_KEY   = os.environ.get("OPENAI_API_KEY", "")
-ANT_KEY      = os.environ.get("ANT_API_KEY", "")
+GROQ_KEY     = os.environ.get("GROQ_API_KEY", "")
 BOT_TOKEN    = os.environ.get("TG_BOT_TOKEN", "")
 ADMIN_IDS    = [int(x) for x in os.environ.get("TG_ADMIN_IDS","").split(",") if x.strip().isdigit()]
 DB_PATH      = os.environ.get("RELAY_DB_PATH", "office_relay.db")
 ADMIN_PORT   = int(os.environ.get("ADMIN_PORT", "8080"))
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "")
 
-# ── AI Clients ────────────────────────────────────────────────
-# qwen3-coder-80b  via OpenAI-compatible endpoint
-_qwen_client = None
-if OPENAI_KEY:
-    _qwen_client = OpenAI(base_url="https://api.g0i.ai/v1", api_key=OPENAI_KEY)
-
-# claude-sonnet-4.6  via Anthropic-compatible endpoint
-_ant_client = None
-if ANT_KEY:
-    _ant_client = anthropic.Anthropic(base_url="https://api.g0i.ai", api_key=ANT_KEY)
+# ── AI Client ────────────────────────────────────────────────
+# llama-3.3-70b-versatile via Groq (OpenAI-compatible endpoint)
+_groq_client = None
+if GROQ_KEY:
+    _groq_client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_KEY)
 
 # ═══════════════════════════════════════════════════════════════
 # FLASK APP
@@ -224,7 +211,7 @@ def api_analyze():
     loop = asyncio.new_event_loop()
     try:
         entries, stype, err = loop.run_until_complete(
-            parse_db_full(url, api_key, OPENAI_KEY or None, BOT_TOKEN, ADMIN_IDS))
+            parse_db_full(url, api_key, GROQ_KEY or None, BOT_TOKEN, ADMIN_IDS))
     finally:
         loop.close()
     real   = [e.to_dict() for e in entries if not e.is_ghost]
@@ -241,7 +228,7 @@ def api_learned_patterns():
 @app.route("/api/ai/analyze_url", methods=["POST"])
 def api_ai_analyze_url():
     if not _check_auth(): return jsonify({"error":"Unauthorized"}), 401
-    if not OPENAI_KEY: return jsonify({"error":"OPENAI_API_KEY not set"}), 400
+    if not GROQ_KEY: return jsonify({"error":"OPENAI_API_KEY not set"}), 400
     data    = request.get_json() or {}
     url     = data.get("url","").strip()
     api_key = data.get("api_key","").strip() or None
@@ -249,7 +236,7 @@ def api_ai_analyze_url():
     loop = asyncio.new_event_loop()
     try:
         entries, pattern, err = loop.run_until_complete(
-            ai_learn_structure(url, api_key, OPENAI_KEY, BOT_TOKEN, ADMIN_IDS))
+            ai_learn_structure(url, api_key, GROQ_KEY, BOT_TOKEN, ADMIN_IDS))
     finally:
         loop.close()
     if err: return jsonify({"success":False,"error":err})
@@ -261,16 +248,15 @@ def api_ai_analyze_url():
     })
 
 # ═══════════════════════════════════════════════════════════════
-# ROUTES — AI CHAT  (claude-sonnet-4.6 via api.g0i.ai)
+# ROUTES — AI CHAT  (llama-3.3-70b-versatile via Groq)
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/ai/chat", methods=["POST"])
 def api_ai_chat():
     if not _check_auth(): return jsonify({"error":"Unauthorized"}), 401
 
-    # Prefer Anthropic (claude-sonnet-4.6) for chat; fallback to qwen
-    if not _ant_client and not _qwen_client:
-        return jsonify({"reply":"⚠️ No AI key set. Add ANT_API_KEY or OPENAI_API_KEY.", "action":None})
+    if not _groq_client:
+        return jsonify({"reply":"⚠️ No AI key set. Add GROQ_API_KEY.", "action":None})
 
     data    = request.get_json() or {}
     message = data.get("message","").strip()
@@ -305,24 +291,14 @@ def api_ai_chat():
         _chat_history.pop(0)
 
     try:
-        if _ant_client:
-            # claude-sonnet-4.6
-            resp = _ant_client.messages.create(
-                model="claude-sonnet-4.6",
-                max_tokens=900,
-                system=sys_ctx,
-                messages=_chat_history[-10:],
-            )
-            reply = resp.content[0].text
-        else:
-            # qwen3-coder-80b fallback
-            resp  = _qwen_client.chat.completions.create(
-                model="qwen3-coder-80b",
-                messages=[{"role":"system","content":sys_ctx}] + _chat_history[-10:],
-                temperature=0.4,
-                max_tokens=800,
-            )
-            reply = resp.choices[0].message.content
+        # Groq llama-3.3-70b-versatile (OpenAI-compatible chat.completions API)
+        resp  = _groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role":"system","content":sys_ctx}] + _chat_history[-10:],
+            temperature=0.4,
+            max_tokens=800,
+        )
+        reply = resp.choices[0].message.content
         _chat_history.append({"role":"assistant","content":reply})
     except Exception as e:
         return jsonify({"reply":f"❌ AI error: {e}", "action":None})
@@ -335,7 +311,7 @@ def api_ai_chat():
             loop = asyncio.new_event_loop()
             try:
                 loop.run_until_complete(
-                    ai_learn_structure(fb_url, fb_key, OPENAI_KEY, BOT_TOKEN, ADMIN_IDS))
+                    ai_learn_structure(fb_url, fb_key, GROQ_KEY, BOT_TOKEN, ADMIN_IDS))
             except Exception as ex:
                 print(f"[admin_web] bg AI learn error: {ex}")
             finally:
@@ -412,13 +388,12 @@ def index():
 
 if __name__ == "__main__":
     ai_status = []
-    if _ant_client:  ai_status.append("claude-sonnet-4.6 ✅")
-    if _qwen_client: ai_status.append("qwen3-coder-80b ✅")
-    if not ai_status: ai_status.append("❌ No AI key set")
+    if _groq_client:  ai_status.append("llama-3.3-70b-versatile ✅")
+    if not ai_status: ai_status.append("❌ No GROQ_API_KEY set")
 
     print(f"""
 ╔══════════════════════════════════════════════════╗
-  SMS Relay Admin Dashboard  v3
+  SMS Relay Admin Dashboard  v4
   http://localhost:{ADMIN_PORT}
   AI Chat:    {' | '.join(ai_status)}
   TG Alerts:  {"✅ " + str(len(ADMIN_IDS)) + " admin(s)" if BOT_TOKEN and ADMIN_IDS else "❌ Set TG_BOT_TOKEN + TG_ADMIN_IDS"}

@@ -278,7 +278,9 @@ async function selectDevice(number) {
     const r = await h(`/api/messages/${encodeURIComponent(number)}?limit=50`);
     const data = await r.json();
     const msgs = data.messages || [];
-    seenKeys = new Set(msgs.map(m=>m.key));
+    // FIX: Properly reset seenKeys for new device selection
+    seenKeys.clear();
+    msgs.forEach(m => seenKeys.add(m.key));
     renderMessages(msgs);
   } catch(e) {
     document.getElementById('msg-body').innerHTML =

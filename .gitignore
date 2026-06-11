@@ -1,0 +1,8 @@
+```
+# Compressed archives
+*.zip
+*.tar.gz
+
+# Temporary files
+*.tmp
+```

