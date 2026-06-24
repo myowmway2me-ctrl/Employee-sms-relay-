@@ -1,10 +1,10 @@
-# ═══════════════════════════════════════════════════════════════════
+i# ═══════════════════════════════════════════════════════════════════
 #   SHOPSY GAME SESSION BOT
 #   Supports: JSON import + OTP login
 # ═══════════════════════════════════════════════════════════════════
 
-BOT_TOKEN   = "YOUR_BOT_TOKEN_HERE"
-ADMIN_IDS   = [123456789]  # Your Telegram user ID(s)
+BOT_TOKEN   = "7786266503:AAEbknozlbGOxUtFy_yNAGL1GZRNLd27Kqw"
+ADMIN_IDS   = [6013007573]  # Your Telegram user ID(s)
 
 import os, json, asyncio, logging, uuid, time, re
 from typing import List, Dict, Optional
